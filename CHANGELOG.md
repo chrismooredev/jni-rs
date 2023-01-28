@@ -15,15 +15,48 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+This release makes extensive breaking changes in order to improve safety. Most projects that use this library will need to be changed. Please see [the migration guide](docs/0.21-MIGRATION.md).
+
 ### Added
 - `JavaStr::into_raw()` which drops the `JavaStr` and releases ownership of the raw string pointer ([#374](https://github.com/jni-rs/jni-rs/pull/374))
 - `JavaStr::from_raw()` which takes ownership of a raw string pointer to create a `JavaStr` ([#374](https://github.com/jni-rs/jni-rs/pull/374))
 - `JNIEnv::get_string_unchecked` is a cheaper, `unsafe` alternative to `get_string` that doesn't check the given object is a `java.lang.String` instance. ([#328](https://github.com/jni-rs/jni-rs/issues/328))
+- `WeakRef` and `JNIEnv#new_weak_ref`. ([#304](https://github.com/jni-rs/jni-rs/pull/304))
+- `define_class_bytearray` method that takes an `AutoArray<jbyte>` rather than a `&[u8]`
+- `JObject` now has an `as_raw` method that borrows the `JObject` instead of taking ownership like `into_raw`. Needed because `JObject` no longer has the `Copy` trait. ([#392](https://github.com/jni-rs/jni-rs/issues/392))
+- `JNIEnv::with_local_frame_returning_local` supports returning a single local ref from a new local frame, since this feature was removed from `with_local_frame` ([#399](https://github.com/jni-rs/jni-rs/issues/399))
 
 ### Changed
 - `JNIEnv::get_string` checks that the given object is a `java.lang.String` instance to avoid undefined behaviour from the JNI implementation potentially aborting the program. ([#328](https://github.com/jni-rs/jni-rs/issues/328))
 - `JNIEnv::call_*method_unchecked` was marked `unsafe`, as passing improper argument types, or a bad number of arguments, can cause a JVM crash. ([#385](https://github.com/jni-rs/jni-rs/issues/385))
 - The `JNIEnv::new_object_unchecked` function now takes arguments as `&[jni::sys::jvalue]` to avoid allocating, putting it inline with changes to `JniEnv::call_*_unchecked` from 0.20.0 ([#382](https://github.com/jni-rs/jni-rs/pull/382))
+- The `get_superclass` function now returns an Option instead of a null pointer if the class has no superclass ([#151](https://github.com/jni-rs/jni-rs/issues/151))
+- The `invocation` feature now locates the JVM implementation dynamically at runtime (via the `java-locator` crate by default) instead of linking with the JVM at build time ([#293](https://github.com/jni-rs/jni-rs/pull/293))
+- Most `JNIEnv` methods now require `&mut self`. This improves safety by preventing `JObject`s from getting an invalid lifetime. Most native method implementations (that is, `#[no_mangle] extern "system" fn`s) must now make the `JNIEnv` parameter `mut`. See the example on the crate documentation. ([#392](https://github.com/jni-rs/jni-rs/issues/392))
+- `JByteBuffer`, `JClass`, `JNIEnv`, `JObject`, `JString`, and `JThrowable` no longer have the `Clone` or `Copy` traits. This improves safety by preventing object references from being used after the JVM deletes them. Most functions that take one of these types as a parameter (except `extern fn`s that are directly called by the JVM) should now borrow it instead, e.g. `&JObject` instead of `JObject`. ([#392](https://github.com/jni-rs/jni-rs/issues/392))
+- `AutoLocal` is now generic in the type of object reference (`JString`, etc). ([#392](https://github.com/jni-rs/jni-rs/issues/392))
+- The closure passed to `JNIEnv::with_local_frame` must now take a `&mut JNIEnv` parameter, which has a different lifetime. This improves safety by preventing local references from escaping the closure, which would cause a use-after-free bug. `Executor::with_attached` and `Executor::with_attached_capacity` have been similarly changed. ([#392](https://github.com/jni-rs/jni-rs/issues/392))
+- The closure passed to `JNIEnv::with_local_frame` can now return a generic `Result<T, E>` so long as the error implements `From<jni::errors::Error>` ([#399](https://github.com/jni-rs/jni-rs/issues/399))
+- `JNIEnv::with_local_frame` now returns the same type that the given closure returns ([#399](https://github.com/jni-rs/jni-rs/issues/399))
+- `JNIEnv::with_local_frame` no longer supports returning a local reference directly to the calling scope (see `with_local_frame_returning_local`) ([#399](https://github.com/jni-rs/jni-rs/issues/399))
+- `Executor::with_attached` and `Executor::with_attached_capacity` have been changed in the same way as `JNIEnv::with_local_frame` (they are thin wrappers) ([#399](https://github.com/jni-rs/jni-rs/issues/399))
+- `Desc`, `JNIEnv::pop_local_frame`, and `TypeArray` are now `unsafe`. ([#392](https://github.com/jni-rs/jni-rs/issues/392))
+- The `Desc` trait now has an associated type `Output`. Many implementations now return `AutoLocal`, so if you call `Desc::lookup` yourself and then call `as_raw` on the returned object, make sure the `AutoLocal` isn't dropped too soon (see the `Desc::lookup` documentation for examples). ([#392](https://github.com/jni-rs/jni-rs/issues/392))
+- Named lifetimes in the documentation have more descriptive names (like `'local` instead of `'a`). The new naming convention is explained in the `JNIEnv` documentation. ([#392](https://github.com/jni-rs/jni-rs/issues/392))
+- Object reference types (`JObject`, `JClass`, `AutoLocal`, `GlobalRef`, etc) now implement `AsRef<JObject>` and `Deref<Target = JObject>`. Typed wrappers like `JClass` also implement `Into<JObject>`, but `GlobalRef` does not. ([#392](https://github.com/jni-rs/jni-rs/issues/392))
+- Most `JList` and `JMap` methods now require a `&mut JNIEnv` parameter. `JListIter` and `JMapIter` no longer implement `Iterator`, and instead have a `next` method that requires a `&mut JNIEnv` parameter (use `while let` loops instead of `for`). ([#392](https://github.com/jni-rs/jni-rs/issues/392))
+- `JValue` has been changed in several ways: ([#392](https://github.com/jni-rs/jni-rs/issues/392))
+    - It is now a generic type named `JValueGen`. `JValue` is now a type alias for `JValueGen<&JObject>`, that is, it borrows an object reference. `JValueOwned` is a type alias for `JValueGen<JObject>`, that is, it owns an object reference.
+    - `JValueOwned` does not have the `Copy` trait.
+    - The `to_jni` method is now named `as_jni`, and it borrows the `JValueGen` instead of taking ownership.
+    - `JObject` can no longer be converted directly to `JValue`, which was commonly done when calling Java methods or constructors. Instead of `obj.into()`, use `(&obj).into()`.
+
+### Fixed
+- Trying to use an object reference after it has been deleted now causes a compile error instead of undefined behavior. As a result, it is now safe to use `AutoLocal`, `JNIEnv::delete_local_ref`, and `JNIEnv::with_local_frame`. (Most of the limitations added in #392, listed above, were needed to make this work.) ([#381](https://github.com/jni-rs/jni-rs/issues/381), [#392](https://github.com/jni-rs/jni-rs/issues/392))
+- Class lookups via the `Desc` trait now return `AutoLocal`s, which prevents them from leaking. ([#109](https://github.com/jni-rs/jni-rs/issues/109), [#392](https://github.com/jni-rs/jni-rs/issues/392))
+
+### Removed
+- `get_string_utf_chars` and `release_string_utf_chars` from `JNIEnv` (See `JavaStr::into_raw()` and `JavaStr::from_raw()` instead) ([#372](https://github.com/jni-rs/jni-rs/pull/372))
 
 ## [0.20.0] — 2022-10-17
 
